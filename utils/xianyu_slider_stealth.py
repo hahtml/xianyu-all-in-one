@@ -965,6 +965,9 @@ class RetryStrategyStats:
 strategy_stats = RetryStrategyStats()
 
 class XianyuSliderStealth:
+    _verification_notification_lock = threading.Lock()
+    _verification_notification_cache: Dict[Tuple[str, str, str], float] = {}
+    _verification_notification_dedup_seconds = 180
     
     def __init__(self, user_id: str = "default", enable_learning: bool = True, headless: bool = True,
                  initial_cookies: Optional[str] = None, proxy: Optional[Dict[str, Any]] = None,
@@ -5385,11 +5388,12 @@ class XianyuSliderStealth:
                 else:
                     recovered_from_timeout = False
 
+                # 只按验证类型和 URL 判断是否变化；截图文件每轮都会生成新路径，
+                # 如果把 screenshot_path 纳入变化判断，会导致同一个扫码页反复推送通知。
                 verification_changed = (
                     recovered_from_timeout or
                     refreshed_type != last_verification_type or
-                    (refreshed_url or None) != last_verification_url or
-                    (refreshed_screenshot_path or None) != last_verification_screenshot_path
+                    (refreshed_url or None) != last_verification_url
                 )
                 if verification_changed:
                     logger.info(
@@ -5428,10 +5432,39 @@ class XianyuSliderStealth:
                 logger.warning(f"【{self.pure_user_id}】无法获取验证信息，跳过通知发送")
             return
 
+        dedup_key = (
+            str(getattr(self, 'pure_user_id', self.user_id) or ''),
+            str(verification_type or 'unknown'),
+            str(frame_url or ''),
+        )
+        dedup_seconds = max(
+            30,
+            int(os.environ.get('XY_VERIFICATION_NOTIFY_DEDUP_SECONDS', self._verification_notification_dedup_seconds) or self._verification_notification_dedup_seconds),
+        )
+        now = time.time()
+        with self._verification_notification_lock:
+            # 顺手清理过期项，避免长期运行缓存增长。
+            expired_keys = [
+                key for key, sent_at in self._verification_notification_cache.items()
+                if now - sent_at > dedup_seconds * 3
+            ]
+            for key in expired_keys:
+                self._verification_notification_cache.pop(key, None)
+
+            last_sent_at = self._verification_notification_cache.get(dedup_key)
+            if last_sent_at and now - last_sent_at < dedup_seconds:
+                logger.info(
+                    f"【{self.pure_user_id}】同一验证入口通知在去重窗口内已发送，跳过重复通知: "
+                    f"type={verification_type}, url={frame_url or 'N/A'}, remaining={dedup_seconds - int(now - last_sent_at)}s"
+                )
+                return
+            self._verification_notification_cache[dedup_key] = now
+
         verification_type_titles = {
             'face_verify': f'⚠️ {notification_scene}需要人脸验证',
             'sms_verify': f'⚠️ {notification_scene}需要短信验证',
             'qr_verify': f'⚠️ {notification_scene}需要二维码验证',
+            'login_page': f'⚠️ {notification_scene}需要扫码登录',
             'unknown': f'⚠️ {notification_scene}需要身份验证',
         }
         title = verification_type_titles.get(verification_type, f'⚠️ {notification_scene}需要身份验证')

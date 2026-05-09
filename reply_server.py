@@ -6039,7 +6039,6 @@ async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[st
                     task_restarted = False
                     warning_message = None
                     final_cookies = temp_instance.cookies_str or real_cookies
-                    log_with_user('warning', f"{warning_message}: {account_id}", current_user)
 
                     try:
                         if cookie_manager.manager:

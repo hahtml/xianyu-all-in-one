@@ -6236,10 +6236,10 @@ class XianyuLive:
                     if self._need_captcha_verification(res_json):
                         qr_login_grace = self.get_qr_login_grace(self.cookie_id)
                         if qr_login_grace and not qr_login_grace.get('captcha_buffer_used'):
-                            logger.warning(f"【{self.cookie_id}】扫码登录后的首轮Token刷新命中风控，先执行浏览器侧Cookie稳定化")
+                            logger.warning(f"【{self.cookie_id}】扫码登录后的首轮Token刷新命中风控，执行一次浏览器侧Cookie稳定化后进入稳定期退避，避免继续挤爆")
                             log_captcha_event(
                                 self.cookie_id,
-                                "扫码登录首轮Token刷新命中风控，先执行浏览器侧稳定化",
+                                "扫码登录首轮Token刷新命中风控，执行浏览器侧稳定化后退避",
                                 None,
                                 f"触发场景: Token刷新, ret={res_json.get('ret', [])}"
                             )
@@ -6259,15 +6259,14 @@ class XianyuLive:
                                     browser_stabilized=True,
                                     browser_stabilized_at=time.time()
                                 )
-                                logger.info(f"【{self.cookie_id}】浏览器侧Cookie稳定化完成，重新尝试Token刷新")
-                                return await self._refresh_token_impl(
-                                    captcha_retry_count,
-                                    post_slider_session_grace_used=post_slider_session_grace_used,
-                                    allow_password_login_recovery=allow_password_login_recovery,
-                                    manual_refresh_browser_stabilization_used=manual_refresh_browser_stabilization_used,
-                                    post_slider_session_retry_count=post_slider_session_retry_count,
-                                )
-                            logger.warning(f"【{self.cookie_id}】浏览器侧Cookie稳定化未消除风控，继续进入滑块验证")
+                                logger.info(f"【{self.cookie_id}】浏览器侧Cookie稳定化完成；不立即重试Token，等待扫码登录稳定期结束后再恢复")
+                            else:
+                                logger.warning(f"【{self.cookie_id}】浏览器侧Cookie稳定化未消除风控；不继续进入滑块验证，等待扫码登录稳定期结束后再恢复")
+
+                            remaining = self._get_qr_login_grace_remaining_seconds()
+                            self.last_token_refresh_status = "qr_login_grace_wait"
+                            self.last_token_refresh_error_message = f"扫码登录后Token预检命中风控，已进入稳定期退避，剩余{remaining}秒"
+                            return None
 
                         manual_refresh_state = self.get_manual_refresh_state(self.cookie_id)
                         is_manual_refresh_handoff = bool(
@@ -11774,6 +11773,9 @@ class XianyuLive:
         # 如果没有token或者token过期，获取新token
         token_refresh_attempted = False
         if not self.current_token or (time.time() - self.last_token_refresh_time) >= self.token_refresh_interval:
+            if self._should_defer_auth_recovery_for_qr_grace():
+                raise InitAuthError(self.last_token_refresh_error_message or "扫码登录稳定期中，暂缓初始化Token预检")
+
             logger.info(f"【{self.cookie_id}】获取初始token...")
             token_refresh_attempted = True
 
@@ -12621,6 +12623,20 @@ class XianyuLive:
                     existing_cookies_dict = trans_cookies(existing_cookie_value) or {}
                 except Exception as merge_e:
                     logger.warning(f"【{target_cookie_id}】解析现有账号Cookie失败，按空基线继续: {self._safe_str(merge_e)}")
+
+            # 扫码登录代表一个新的可信登录会话。x5 系票据与具体风控挑战/API 强绑定，
+            # 如果扫码后的浏览器快照没有返回新的 x5，继续沿用旧 x5sec/x5secdata 反而容易让
+            # 首轮 Token 预检命中 FAIL_SYS_USER_VALIDATE / RGV587_ERROR。
+            stale_x5_fields = []
+            for x5_key in ('x5sec', 'x5secdata', 'x5sectag'):
+                if x5_key in existing_cookies_dict and x5_key not in real_cookies_dict:
+                    existing_cookies_dict.pop(x5_key, None)
+                    stale_x5_fields.append(x5_key)
+            if stale_x5_fields:
+                logger.warning(
+                    f"【{target_cookie_id}】扫码登录快照未返回新的x5票据，已丢弃旧会话x5字段: "
+                    f"{', '.join(stale_x5_fields)}"
+                )
 
             merge_result = self.protected_merge_cookie_dicts(existing_cookies_dict, real_cookies_dict)
             real_cookies_dict = merge_result['merged_cookies_dict']

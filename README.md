@@ -97,7 +97,6 @@
 
 ### 方式一：使用部署脚本（推荐）⭐
 
-<details>
 <summary>Linux / macOS</summary>
 
 ```bash
@@ -115,9 +114,7 @@ chmod +x docker-deploy.sh
 - `docker-compose.yml`：`http://localhost:9000`
 - `docker-compose-cn.yml`：`http://localhost:8000`
 
-</details>
 
-<details>
 <summary>Windows</summary>
 
 ```cmd
@@ -133,7 +130,6 @@ docker-deploy.bat
 - `docker-compose.yml`：`http://localhost:9000`
 - `docker-compose-cn.yml`：`http://localhost:8000`
 
-</details>
 
 ### 方式二：手动使用 Docker Compose
 
@@ -490,11 +486,6 @@ docker-deploy.bat
 - **标注修改内容** - 如基于本项目进行了修改，建议明确标注修改部分
 - **自行承担风险** - 使用者需自行承担部署、配置和运行风险
 - **遵守当地法规** - 使用者应确保实际用途符合当地法律法规和平台规则
-
-### 👤 项目来源
-
-- **原项目**：`zhinianboke-new/xianyu-auto-reply`
-- **当前仓库**：`GuDong2003/xianyu-auto-reply-fix`
 
 ### ⚠️ 免责声明
 
