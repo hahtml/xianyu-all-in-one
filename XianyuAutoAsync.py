@@ -2333,6 +2333,8 @@ class XianyuLive:
             "全部",
             "交易消息",
             "等待你发货",
+            "买家",
+            "工作台通知",
             "你人真不错，送你闲鱼小红花",
             "卖家人不错？送Ta闲鱼小红花",
             "快给ta一个评价吧～",
@@ -4607,7 +4609,8 @@ class XianyuLive:
                             send_user_id=user_id,
                             item_id=item_id,
                             error_message=finalize_result.get('error') or '检测到已发送记录，但补完成发货收尾失败',
-                            chat_id=chat_id
+                            chat_id=chat_id,
+                            order_id=order_id
                         )
                         return
 
@@ -4640,7 +4643,8 @@ class XianyuLive:
                         send_user_id=user_id,
                         item_id=item_id,
                         error_message="发货成功",
-                        chat_id=chat_id
+                        chat_id=chat_id,
+                        order_id=order_id
                     )
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 简化消息自动发货补完成收尾成功')
                     return
@@ -4741,7 +4745,8 @@ class XianyuLive:
                                 send_user_id=user_id,
                                 item_id=item_id,
                                 error_message=finalize_result.get('error') or '发送成功但提交发货副作用失败',
-                                chat_id=chat_id
+                                chat_id=chat_id,
+                                order_id=order_id
                             )
                             return
 
@@ -4789,7 +4794,8 @@ class XianyuLive:
                         send_user_id=user_id,
                         item_id=item_id,
                         error_message="发货成功",
-                        chat_id=chat_id
+                        chat_id=chat_id,
+                        order_id=order_id
                     )
                     
                     logger.info(f'[{msg_time}] 【{self.cookie_id}】[{msg_id}] ✅ 简化消息自动发货完成')
@@ -4809,7 +4815,8 @@ class XianyuLive:
                         send_user_id=user_id,
                         item_id=item_id,
                         error_message="未找到匹配的发货规则或获取发货内容失败",
-                        chat_id=chat_id
+                        chat_id=chat_id,
+                        order_id=order_id
                     )
 
         except Exception as e:
@@ -5511,9 +5518,9 @@ class XianyuLive:
                                 )
                             else:
                                 notify_message = f"多数量发货成功，共完成 {finalized_count}/{quantity_to_send} 个卡券"
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, notify_message, chat_id)
+                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, notify_message, chat_id, order_id=order_id)
                         else:
-                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id)
+                            await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, "发货成功", chat_id, order_id=order_id)
                     else:
                         logger.warning(f'[{msg_time}] 【自动发货】未找到匹配的发货规则或获取发货内容失败')
                         self._record_delivery_log(
@@ -5525,7 +5532,7 @@ class XianyuLive:
                             reason=last_delivery_error or "未找到匹配的发货规则或获取发货内容失败",
                             channel='auto'
                         )
-                        await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, last_delivery_error or "未找到匹配的发货规则或获取发货内容失败", chat_id)
+                        await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, last_delivery_error or "未找到匹配的发货规则或获取发货内容失败", chat_id, order_id=order_id)
 
                 except Exception as e:
                     self._record_delivery_log(
@@ -5539,7 +5546,7 @@ class XianyuLive:
                     )
                     logger.error(f"自动发货处理异常: {self._safe_str(e)}")
                     # 发送自动发货异常通知
-                    await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"自动发货处理异常: {str(e)}", chat_id)
+                    await self.send_delivery_failure_notification(send_user_name, send_user_id, item_id, f"自动发货处理异常: {str(e)}", chat_id, order_id=order_id)
 
                 logger.info(f'[{msg_time}] 【{self.cookie_id}】订单锁释放: {lock_key}，自动发货处理完成')
 
@@ -9861,13 +9868,106 @@ class XianyuLive:
 
         return "Token定时刷新失败，将自动重试"
 
-    async def send_delivery_failure_notification(self, send_user_name: str, send_user_id: str, item_id: str, error_message: str, chat_id: str = None):
-        """发送自动发货失败通知"""
+    def _resolve_delivery_notification_buyer_name(
+        self,
+        buyer_name: Any = None,
+        *,
+        buyer_id: str = None,
+        chat_id: str = None,
+        order_id: str = None,
+        log_prefix: str = "",
+    ) -> str:
+        """为自动发货通知解析可信买家昵称，避免使用“等待你发货”等系统标题。"""
+        normalized_buyer_id = self._normalize_buyer_id_value(buyer_id)
+        normalized_chat_id = str(chat_id or '').strip()
+
         try:
+            if order_id:
+                order_info = db_manager.get_order_by_id(str(order_id).strip())
+                if order_info:
+                    order_cookie_id = str(order_info.get('cookie_id') or '').strip()
+                    if not order_cookie_id or order_cookie_id == str(self.cookie_id).strip():
+                        order_buyer_nick = self._sanitize_buyer_nick(
+                            order_info.get('buyer_nick'),
+                            source='delivery_notification_order',
+                            log_prefix=log_prefix,
+                        )
+                        if order_buyer_nick:
+                            return order_buyer_nick
+
+                        if not normalized_buyer_id:
+                            normalized_buyer_id = self._normalize_buyer_id_value(order_info.get('buyer_id'))
+
+                        if not normalized_chat_id:
+                            sid = str(order_info.get('sid') or '').strip()
+                            normalized_chat_id = sid.split('@')[0].strip() if sid else ''
+
+            if normalized_chat_id:
+                chat_messages = db_manager.get_chat_messages(self.cookie_id, normalized_chat_id, limit=80)
+                for chat_message in reversed(chat_messages or []):
+                    if int(chat_message.get('direction') or 0) != 2:
+                        continue
+
+                    sender_id = self._normalize_buyer_id_value(chat_message.get('sender_id'))
+                    if sender_id and sender_id == self.myid:
+                        continue
+                    if normalized_buyer_id and sender_id and sender_id != normalized_buyer_id:
+                        continue
+
+                    chat_buyer_nick = self._sanitize_buyer_nick(
+                        chat_message.get('sender_name'),
+                        source='delivery_notification_chat',
+                        log_prefix=log_prefix,
+                    )
+                    if chat_buyer_nick:
+                        return chat_buyer_nick
+
+            if normalized_buyer_id:
+                recent_order = db_manager.get_recent_order_by_buyer_id(
+                    normalized_buyer_id,
+                    cookie_id=self.cookie_id,
+                    minutes=24 * 60,
+                )
+                if recent_order:
+                    recent_buyer_nick = self._sanitize_buyer_nick(
+                        recent_order.get('buyer_nick'),
+                        source='delivery_notification_recent_order',
+                        log_prefix=log_prefix,
+                    )
+                    if recent_buyer_nick:
+                        return recent_buyer_nick
+        except Exception as resolve_error:
+            logger.warning(f"{log_prefix} 自动发货通知买家昵称解析失败: {self._safe_str(resolve_error)}")
+
+        fallback_buyer_name = self._sanitize_buyer_nick(
+            buyer_name,
+            source='delivery_notification_raw',
+            log_prefix=log_prefix,
+        )
+        return fallback_buyer_name or '买家'
+
+    async def send_delivery_failure_notification(
+        self,
+        send_user_name: str,
+        send_user_id: str,
+        item_id: str,
+        error_message: str,
+        chat_id: str = None,
+        order_id: str = None,
+    ):
+        """发送自动发货通知。"""
+        try:
+            resolved_buyer_name = self._resolve_delivery_notification_buyer_name(
+                send_user_name,
+                buyer_id=send_user_id,
+                chat_id=chat_id,
+                order_id=order_id,
+                log_prefix=f"【{self.cookie_id}】",
+            )
             notification_message = render_notification_template(
                 'delivery',
                 account_id=self.cookie_id,
-                buyer_name=send_user_name,
+                buyer_name=resolved_buyer_name,
                 buyer_id=send_user_id,
                 item_id=item_id,
                 chat_id=chat_id or '未知',

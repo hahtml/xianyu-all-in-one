@@ -6781,6 +6781,54 @@ Cookie数量: {cookie_count}
             return False
         return True
 
+    def _sanitize_order_buyer_nick(self, buyer_nick: str = None) -> str:
+        """过滤订单买家昵称中的系统通知标题，避免订单列表展示“工作台通知”等文案。"""
+        if buyer_nick is None:
+            return None
+
+        text = str(buyer_nick).strip()
+        if not text:
+            return None
+
+        invalid_exact_titles = {
+            "订单",
+            "全部",
+            "交易消息",
+            "等待你发货",
+            "买家",
+            "工作台通知",
+            "我完成了评价",
+            "你人真不错，送你闲鱼小红花",
+            "卖家人不错？送Ta闲鱼小红花",
+            "快给ta一个评价吧～",
+            "快给ta一个评价吧~",
+        }
+        if text in invalid_exact_titles:
+            logger.info(f"忽略系统标题型订单买家昵称: {text}")
+            return None
+
+        invalid_keywords = (
+            "小红花", "待付款", "待发货", "待刀成", "成功小刀", "闲鱼",
+            "交易", "收货", "退款", "评价", "发货", "付款", "拍下",
+            "确认", "关闭", "鼓励", "真不错", "全部", "订单",
+        )
+        if any(keyword in text for keyword in invalid_keywords):
+            logger.info(f"忽略系统关键词型订单买家昵称: {text}")
+            return None
+
+        return text
+
+    def _resolve_order_buyer_nick_for_write(self, order_id: str, buyer_nick: str = None, existing_buyer_nick: str = None) -> str:
+        sanitized_incoming = self._sanitize_order_buyer_nick(buyer_nick)
+        if sanitized_incoming:
+            return sanitized_incoming
+
+        sanitized_existing = self._sanitize_order_buyer_nick(existing_buyer_nick)
+        if sanitized_existing:
+            return sanitized_existing
+
+        return None
+
     def insert_or_update_order(self, order_id: str, item_id: str = None, buyer_id: str = None,
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
                               amount: str = None, order_status: str = None, cookie_id: str = None,
@@ -6824,8 +6872,10 @@ Cookie数量: {cookie_count}
                         return False
 
                 # 检查订单是否已存在
-                cursor.execute("SELECT order_id FROM orders WHERE order_id = ?", (order_id,))
+                cursor.execute("SELECT order_id, buyer_nick FROM orders WHERE order_id = ?", (order_id,))
                 existing = cursor.fetchone()
+                existing_buyer_nick = existing[1] if existing else None
+                resolved_buyer_nick = self._resolve_order_buyer_nick_for_write(order_id, buyer_nick, existing_buyer_nick)
 
                 if existing:
                     # 更新现有订单
@@ -6842,8 +6892,11 @@ Cookie数量: {cookie_count}
                         else:
                             logger.debug(f"跳过无效buyer_id覆盖: order_id={order_id}, invalid_buyer_id={buyer_id}")
                     if buyer_nick is not None:
-                        update_fields.append("buyer_nick = ?")
-                        update_values.append(buyer_nick)
+                        if resolved_buyer_nick is not None:
+                            update_fields.append("buyer_nick = ?")
+                            update_values.append(resolved_buyer_nick)
+                        elif existing_buyer_nick and self._sanitize_order_buyer_nick(existing_buyer_nick) is None:
+                            update_fields.append("buyer_nick = NULL")
                     if sid is not None:
                         update_fields.append("sid = ?")
                         update_values.append(sid)
@@ -6907,7 +6960,7 @@ Cookie数量: {cookie_count}
                         'spec_name_2', 'spec_value_2', 'quantity', 'amount', 'order_status', 'cookie_id'
                     ]
                     insert_values = [
-                        order_id, item_id, sanitized_buyer_id, buyer_nick, sid, spec_name, spec_value,
+                        order_id, item_id, sanitized_buyer_id, resolved_buyer_nick, sid, spec_name, spec_value,
                         spec_name_2, spec_value_2, quantity, amount, normalized_order_status or 'unknown', cookie_id
                     ]
 
@@ -7002,6 +7055,37 @@ Cookie数量: {cookie_count}
                 logger.error(f"获取订单退款前状态失败: {order_id} - {e}")
                 return None
 
+    def _lookup_buyer_nick_from_chat_messages(self, cookie_id: str, sid: str = None, buyer_id: str = None) -> str:
+        chat_id = str(sid or '').strip().split('@')[0]
+        normalized_buyer_id = str(buyer_id or '').strip()
+        if not chat_id:
+            return None
+
+        try:
+            cursor = self.conn.cursor()
+            params = [cookie_id, chat_id]
+            buyer_filter = ''
+            if normalized_buyer_id:
+                buyer_filter = ' AND sender_id = ?'
+                params.append(normalized_buyer_id)
+
+            cursor.execute(f'''
+                SELECT sender_name
+                FROM chat_messages
+                WHERE cookie_id = ? AND chat_id = ? AND direction = 2
+                  AND sender_name IS NOT NULL AND sender_name != ''{buyer_filter}
+                ORDER BY id DESC
+                LIMIT 80
+            ''', params)
+            for row in cursor.fetchall():
+                buyer_nick = self._sanitize_order_buyer_nick(row[0])
+                if buyer_nick:
+                    return buyer_nick
+        except Exception as e:
+            logger.debug(f"从聊天记录兜底买家昵称失败: cookie_id={cookie_id}, sid={sid}, buyer_id={buyer_id}, error={e}")
+
+        return None
+
     def get_orders_by_cookie(self, cookie_id: str, limit: int = 100):
         """根据Cookie ID获取订单列表"""
         with self.lock:
@@ -7017,11 +7101,14 @@ Cookie数量: {cookie_count}
 
                 orders = []
                 for row in cursor.fetchall():
+                    buyer_nick = self._sanitize_order_buyer_nick(row[3])
+                    if not buyer_nick:
+                        buyer_nick = self._lookup_buyer_nick_from_chat_messages(cookie_id, row[4], row[2])
                     orders.append({
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
-                        'buyer_nick': row[3],
+                        'buyer_nick': buyer_nick,
                         'sid': row[4],
                         'spec_name': row[5],
                         'spec_value': row[6],
@@ -7082,6 +7169,10 @@ Cookie数量: {cookie_count}
         if not buyer_id or not buyer_nick:
             return 0
 
+        sanitized_buyer_nick = self._sanitize_order_buyer_nick(buyer_nick)
+        if not sanitized_buyer_nick:
+            return 0
+
         with self.lock:
             try:
                 cursor = self.conn.cursor()
@@ -7091,18 +7182,18 @@ Cookie数量: {cookie_count}
                     cursor.execute('''
                     UPDATE orders SET buyer_nick = ?
                     WHERE buyer_id = ? AND cookie_id = ?
-                    ''', (buyer_nick, buyer_id, cookie_id))
+                    ''', (sanitized_buyer_nick, buyer_id, cookie_id))
                 else:
                     cursor.execute('''
                     UPDATE orders SET buyer_nick = ?
                     WHERE buyer_id = ?
-                    ''', (buyer_nick, buyer_id))
+                    ''', (sanitized_buyer_nick, buyer_id))
 
                 updated_count = cursor.rowcount
                 self.conn.commit()
 
                 if updated_count > 0:
-                    logger.info(f"已更新买家 {buyer_id} 的 {updated_count} 个订单昵称为: {buyer_nick}")
+                    logger.info(f"已更新买家 {buyer_id} 的 {updated_count} 个订单昵称为: {sanitized_buyer_nick}")
 
                 return updated_count
 
