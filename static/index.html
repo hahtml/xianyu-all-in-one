@@ -5029,7 +5029,7 @@
 
   <!-- JS依赖 -->
   <script src="/static/lib/bootstrap/bootstrap.bundle.min.js"></script>
-  <script src="/static/js/app.js?v=1.2.9"></script>
+  <script src="/static/js/app.js?v=1.2.10"></script>
 
   <!-- 默认回复管理模态框 -->
   <div class="modal fade" id="defaultReplyModal" tabindex="-1" aria-labelledby="defaultReplyModalLabel" aria-hidden="true">
@@ -5309,8 +5309,8 @@
                     </div>
 
                     <div class="ai-config-item ai-config-item-wide">
-                      <label for="aiApiKey" class="form-label"><i class="bi bi-key me-1"></i>API密钥 <span class="text-danger">*</span></label>
-                      <input type="password" class="form-control" id="aiApiKey" placeholder="请输入API密钥" required>
+                      <label for="aiApiKey" class="form-label"><i class="bi bi-key me-1"></i>API密钥 <span class="text-muted">(本地 Ollama 等无鉴权服务可留空)</span></label>
+                      <input type="password" class="form-control" id="aiApiKey" placeholder="请输入API密钥（Ollama 可留空）">
                       <small class="form-text text-muted">通义千问请使用DashScope API Key，GPT请使用OpenAI API Key</small>
                     </div>
                   </div>

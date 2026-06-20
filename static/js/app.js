@@ -6894,8 +6894,14 @@ async function saveAIReplyConfig() {
     // 如果启用AI回复，验证必填字段
     if (enabled) {
         const apiKey = document.getElementById('aiApiKey').value.trim();
-        if (!apiKey) {
-        showToast('请输入API密钥', 'warning');
+        const baseUrl = (document.getElementById('aiBaseUrl').value || '').trim().toLowerCase();
+        const apiType = (document.getElementById('aiApiType').value || '').trim().toLowerCase();
+        // 本地/无鉴权服务（如 Ollama）允许留空 API 密钥
+        const keyOptional = apiType === 'ollama'
+            || /\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)/.test(baseUrl)
+            || baseUrl.includes(':11434');
+        if (!apiKey && !keyOptional) {
+        showToast('请输入API密钥（本地 Ollama 等无鉴权服务可留空）', 'warning');
         return;
         }
     }
